@@ -70,8 +70,10 @@ None (yet).
 # pylint: disable=E0401,E0611,E1101,E1121
 
 
+from functools import lru_cache, wraps
 import sys
 import copy
+from typing import Any, Iterable
 # from textwrap import dedent, indent
 
 import numpy as np
@@ -92,7 +94,8 @@ try:
     from arcpy import Array, Exists, Multipoint, Point, Polygon, Polyline
 
     from arcpy.da import (
-        Describe, InsertCursor, SearchCursor, FeatureClassToNumPyArray,
+        Describe as _Describe,
+        InsertCursor, SearchCursor, FeatureClassToNumPyArray,
         TableToNumPyArray)  # ExtendTable, NumPyArrayToTable,  UpdateCursor
 
     from arcpy.management import (
@@ -118,6 +121,88 @@ __all__ = [
 
 
 # ============================================================================
+
+# Describe override with lazy evaluation and caching
+class _lazy_describe(dict):
+    """Defer triggering a Describe call until a 
+    requested key cannot be found
+    
+    Usage
+    -----
+    >>> desc = _lazy_describe(in_fc)
+    >>> desc['shapeType'] = 'Polygon' # Assign a value
+    >>> desc
+    {'shapeType': 'Polygon'} # Acts as a normal dict
+    >>> desc['shapeType']    # manually assigned prevents Describe call
+    'Polygon'
+    >>> desc['fields']       # Access an unset value and the Describe is called
+    [<Field object at ..., ...]
+    >>> desc['shapeType']    # Assigned keys are replaced with Describe values
+    'Point'
+    """
+    def __init__(self, in_fc):
+        self._in_fc = in_fc
+        self._loaded = False
+        super().__init__()
+
+    def __getitem__(self, key):
+        if key not in self and not self._loaded:
+            self.update(_Describe(self._in_fc))
+            self._loaded = True
+        return super().__getitem__(key)
+
+@lru_cache(maxsize=1)
+def _describe_cache(in_fc):
+    """Helper cache for wrapped Describe (allows a populated lazy Describe to be used)
+    
+    Notes
+    -----
+    The lazy object will be populated on first attribute access, 
+    and all subsequent accesses will reuse the same populated Describe dict
+    """
+    return _lazy_describe(in_fc)
+
+def Describe(in_fc, *, cache=False):
+    """A wrapped version of `arcpy.da.Describe` that lazily accesses the 
+    Describe object and allows for per-feature caches
+    
+    Notes
+    -----
+    Describe can be painfully slow (see: `fc_to_Geo` Notes). This allows us 
+    to find alternate ways to cache the results of a Describe call so subsequent 
+    calls to the same feature in a given session are cached.
+
+    If you are going to use the result of a Describe more than once, or have a 
+    function that may be used in a way that calls Describe repeatedly, 
+    set `cache = True` in the function call.
+    
+    The cache size of this function is 1, so only the most recently accessed 
+    Describe is stored.
+    
+    This function attempts to quickly get `spatialReference` and `shapeType` 
+    by reading the first row of the input features. If it can't get those from 
+    that immediate read, then Describe is hydrated fully. Otherwise, these 
+    keys will be accessible for free later on without ever calling Describe.
+    """
+    
+    # Clear the cache when called with no cache unset or set to False
+    if not cache:
+        _describe_cache.cache_clear()
+    desc = _describe_cache(str(in_fc))
+    
+    # Try an get the SR and Type by grabbing the first geometry
+    # >>> %timeit Describe(fc)['spatialReference']
+    if 'shapeType' not in desc and (shape := _get_shape(in_fc)):
+        desc['shapeType'] = type(shape).__name__
+        desc['spatialReference'] = shape.spatialReference
+
+def _get_shape(in_fc):
+    try:
+        with SearchCursor(in_fc, 'SHAPE@') as cur:
+            return next(cur, [None])[0]
+    except RuntimeError:
+        pass
+
 # ---- Helpers
 # Spatial reference object
 def get_SR(in_fc, verbose=False):
