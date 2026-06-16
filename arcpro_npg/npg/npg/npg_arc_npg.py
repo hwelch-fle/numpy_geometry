@@ -70,6 +70,7 @@ None (yet).
 # pylint: disable=E0401,E0611,E1101,E1121
 
 
+from functools import lru_cache, wraps
 import sys
 import copy
 # from textwrap import dedent, indent
@@ -92,7 +93,8 @@ try:
     from arcpy import Array, Exists, Multipoint, Point, Polygon, Polyline
 
     from arcpy.da import (
-        Describe, InsertCursor, SearchCursor, FeatureClassToNumPyArray,
+        Describe as _Describe, 
+        InsertCursor, SearchCursor, FeatureClassToNumPyArray,
         TableToNumPyArray)  # ExtendTable, NumPyArrayToTable,  UpdateCursor
 
     from arcpy.management import (
@@ -119,6 +121,22 @@ __all__ = [
 
 # ============================================================================
 # ---- Helpers
+
+# Cached Describe results
+USE_DESCRIBE_CACHE = False
+
+@lru_cache(maxsize=128)
+def _describe_cache(in_fc):
+    return _Describe(in_fc)
+
+@wraps(_Describe)
+def Describe(in_fc, use_cache=USE_DESCRIBE_CACHE):
+    if use_cache:
+        return _describe_cache(in_fc)
+    else:
+        return _Describe(in_fc)
+
+
 # Spatial reference object
 def get_SR(in_fc, verbose=False):
     """Return the spatial reference of a featureclass."""
