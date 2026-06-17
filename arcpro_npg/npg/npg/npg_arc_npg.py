@@ -195,6 +195,8 @@ def Describe(in_fc, *, cache=False):
     if 'shapeType' not in desc and (shape := _get_shape(in_fc)):
         desc['shapeType'] = type(shape).__name__
         desc['spatialReference'] = shape.spatialReference
+    
+    return desc
 
 def _get_shape(in_fc):
     try:
